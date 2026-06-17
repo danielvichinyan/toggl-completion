@@ -451,23 +451,36 @@ def build_schedule(
 # ── Display ────────────────────────────────────────────────────────────────────
 
 def display_schedule(schedule: list[dict]) -> None:
-    grand_total = 0.0
+    W = 72  # inner content width (excluding leading "  ")
+    DESC_MAX = W - 26  # space left after time + dur columns
+
+    grand_total = 0
     for day in schedule:
         d = day["date"]
-        print(f"\n### {day_heading(d)}")
-        print(f"  {'Time':<14} {'Dur':>6}  Description")
-        print("  " + "-" * 66)
-        day_min = 0.0
+        print(f"\n  {day_heading(d)}")
+        print("  " + "─" * W)
+        print(f"  {'TIME':<13}  {'DUR':>5}  DESCRIPTION")
+        print("  " + "─" * W)
+        day_min = 0
         for e in day["entries"]:
             s    = datetime.fromisoformat(e["start_iso"])
             stop = datetime.fromisoformat(e["stop_iso"])
-            mins = (stop - s).total_seconds() / 60
-            tag  = "    " if e["is_task"] else "[m] "
-            print(f"  {format_hm(s)}-{format_hm(stop):<8} {duration_str(int(mins)):>6}  {tag}{e['description']}")
+            mins = int((stop - s).total_seconds() / 60)
+            time_str = f"{format_hm(s)}–{format_hm(stop)}"
+            dur  = duration_str(mins)
+            marker = "◆" if not e["is_task"] else " "
+            desc = e["description"]
+            if len(desc) > DESC_MAX:
+                desc = desc[:DESC_MAX - 3] + "..."
+            print(f"  {time_str:<13}  {dur:>5}  {marker} {desc}")
             day_min += mins
+        print("  " + "─" * W)
+        print(f"  {'Day total:':<30} {duration_str(day_min):>6}")
         grand_total += day_min
-        print(f"  Day total: {duration_str(int(day_min))}")
-    print(f"\nWeek total: {duration_str(int(grand_total))}")
+
+    print()
+    print("  " + "═" * W)
+    print(f"  {'Week total:':<30} {duration_str(grand_total):>6}")
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
@@ -553,15 +566,15 @@ def main() -> None:
     schedule = build_schedule(weekdays, events_by_day, tasks, used_ids)
 
     # ── Display proposal ──
-    print(f"\n{'='*70}")
+    W = 72
+    print(f"\n  {'═' * W}")
     print(f"  PROPOSED TIMESHEET — {week_label}")
-    print(f"  Project: {TOGGL_PROJECT}")
-    print(f"{'='*70}")
+    print(f"  Project: {TOGGL_PROJECT}    ◆ = meeting")
+    print(f"  {'═' * W}")
     display_schedule(schedule)
-    print(f"\n{'='*70}")
 
     if args.dry_run:
-        print("\n[dry-run] Nothing submitted.")
+        print("\n  [dry-run] Nothing submitted.")
         return
 
     # ── Approval ──
