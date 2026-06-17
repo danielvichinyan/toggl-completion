@@ -18,6 +18,8 @@ import random
 import re
 import subprocess
 import sys
+if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -588,24 +590,48 @@ def main() -> None:
     print("\nCreating Toggl entries…")
     all_entries = [e for day in schedule for e in day["entries"]]
     results = create_entries_bulk(all_entries)
-    for line in results:
-        print(line)
+    failed = [r for r in results if "OK" not in r]
+    for line in failed:
+        print(f"  FAILED: {line}")
 
     # ── Close ADO tasks ──
     task_ids = list({e["task_id"] for day in schedule for e in day["entries"] if e["is_task"]})
     close_results: list[str] = []
     if task_ids and not args.no_close:
-        print(f"\nClosing {len(task_ids)} ADO tasks…")
+        print(f"Closing {len(task_ids)} ADO tasks…")
         close_results = close_tasks(task_ids)
         for line in close_results:
-            print(line)
+            if "OK" not in line:
+                print(f"  FAILED: {line}")
     elif args.no_close:
-        print(f"\nSkipping ADO close (--no-close). {len(task_ids)} tasks left Active.")
+        print(f"Skipping ADO close (--no-close). {len(task_ids)} tasks left Active.")
 
+    # ── Final summary ──
+    W = 72
     toggl_ok = sum(1 for r in results if "OK" in r)
     ado_ok   = sum(1 for r in close_results if "OK" in r)
-    print(f"\nDone! {toggl_ok}/{len(results)} Toggl entries created"
-          + (f", {ado_ok}/{len(task_ids)} ADO tasks closed." if task_ids else "."))
+    print(f"\n  {'═' * W}")
+    status = f"{toggl_ok}/{len(results)} entries logged"
+    if task_ids:
+        status += f"  ·  {ado_ok}/{len(task_ids)} tasks closed" if not args.no_close else f"  ·  {len(task_ids)} tasks left Active"
+    print(f"  SUBMITTED — {week_label}    {status}")
+    print(f"  {'═' * W}")
+
+    task_entries = [e for day in schedule for e in day["entries"] if e["is_task"]]
+    print(f"\n  {'#':>6}  {'TIME':<13}  {'DUR':>5}  TASK")
+    print("  " + "─" * W)
+    for i, e in enumerate(task_entries, 1):
+        s    = datetime.fromisoformat(e["start_iso"])
+        stop = datetime.fromisoformat(e["stop_iso"])
+        mins = int((stop - s).total_seconds() / 60)
+        time_str = f"{format_hm(s)}–{format_hm(stop)}"
+        desc = e["description"]
+        max_desc = W - 30
+        if len(desc) > max_desc:
+            desc = desc[:max_desc - 3] + "..."
+        print(f"  {i:>6}  {time_str:<13}  {duration_str(mins):>5}  {desc}")
+    print("  " + "─" * W)
+    print(f"  {len(task_entries):>6} tasks  {'':13}  {duration_str(sum(int((datetime.fromisoformat(e['stop_iso']) - datetime.fromisoformat(e['start_iso'])).total_seconds() / 60) for e in task_entries)):>5}  total task time")
 
 
 if __name__ == "__main__":
