@@ -1,29 +1,95 @@
-# Fill Timesheet — Toggl + Azure DevOps
+# toggl-completion — Timesheet Automation
 
 Automatically fills your **Toggl Track** timesheet for a week by combining:
 
-- **Outlook meetings** — read directly from Toggl's calendar integration via the API (no browser/Playwright needed)
-- **Azure DevOps tasks** — your **Active** tasks in the current iteration
+- **Outlook meetings** — read from Toggl's calendar integration (no browser needed)
+- **Azure DevOps tasks** — your **Active** tasks in the current sprint iteration
 
-It places meetings at their real times, fills the rest of each 10:00–18:00 workday with task entries (2–4 tasks/day, 8h total), shows you a table for approval, and only writes to Toggl after you say go.
+Meetings are placed at their real times. Tasks fill the remaining time in each slot, with a **1-hour minimum per entry** and **10-minute rounding**. Tasks never cross meeting boundaries.
 
 ---
 
-## TL;DR — fill this week in one go
+## Primary: standalone Python script (`fill_timesheet.py`)
 
-```text
-# 1. Open Claude Code in this folder
-cd D:\Professional\toggl-completion
-claude
+The script runs entirely without Claude or an MCP server. It fetches data, proposes a schedule, waits for approval, submits to Toggl, and optionally closes ADO tasks.
 
-# 2. First run only: approve the two MCP servers when prompted, then check they're connected
-/mcp
+### Quick start
 
-# 3. Fill the timesheet
-/fill-timesheet for this week
+```powershell
+# 1. Copy and fill in your credentials
+cp .env.example .env
+#    edit .env — add TOGGL_API_TOKEN and ADO_PAT
+
+# 2. Install dependencies
+pip install requests python-dotenv
+
+# 3. Dry-run (no writes anywhere)
+python fill_timesheet.py --dry-run
+
+# 4. Submit for real (asks for confirmation)
+python fill_timesheet.py
+
+# 5. Or skip the prompt
+python fill_timesheet.py --yes
 ```
 
-Then review the proposed table and reply **"approve"** (or ask for changes). That's it.
+### CLI flags
+
+| Flag | Description |
+|---|---|
+| `--dry-run` | Print the proposed schedule, make no API calls |
+| `--last-week` | Fill Mon–Fri of the previous week |
+| `--next-week` | Fill Mon–Fri of next week |
+| `--skip MON TUE ...` | Skip these weekdays (e.g. `--skip FRI`) |
+| `--only MON TUE ...` | Only fill these weekdays |
+| `--yes` / `-y` | Skip the confirmation prompt and submit immediately |
+| `--no-close` | Submit Toggl entries but do **not** close ADO tasks |
+
+### How the scheduling works
+
+1. Fetches Toggl calendar events for the target week (Outlook meetings via Toggl integration).
+2. Fetches all **Active** ADO tasks assigned to you in the current iteration.
+3. Computes free slots between meetings within the 10:00–18:00 work window.
+4. Distributes tasks across slots: equal base time per task using largest-remainder rounding, **minimum 60 min** per entry, all durations rounded to **10-minute** multiples.
+5. Shows a per-day table and waits for `y/n` confirmation (or skip with `--yes`).
+6. Submits entries to Toggl, then closes ADO tasks (unless `--no-close`).
+
+### Credentials
+
+Create `.env` (see `.env.example`):
+
+```
+TOGGL_API_TOKEN=...   # Toggl → Profile → API Token
+ADO_PAT=...           # Azure DevOps → User Settings → Personal Access Tokens
+                      # Required scopes: Work Items (read + write)
+```
+
+The `.env` file is git-ignored — never commit it.
+
+**Generating an ADO PAT:** go to `https://dev.azure.com/spaceflux/_usersSettings/tokens`, create a token with **Work Items: Read & Write** scope.
+
+### Hardcoded constants (no lookup overhead)
+
+| Constant | Value |
+|---|---|
+| Toggl workspace | `6705147` |
+| Toggl project (`Kodin Development`) | `185931458` |
+| ADO org | `spaceflux` |
+| ADO project | `Spaceflux` |
+| ADO team | `Spaceflux Team` |
+| User email | `daniel.vichinyan@spaceflux.io` |
+
+---
+
+## Secondary: Claude Code MCP skill (`/fill-timesheet`)
+
+An interactive Claude Code skill that does the same thing conversationally. Requires the MCP servers and runs inside `claude`.
+
+```text
+cd D:\Professional\toggl-completion
+claude
+/fill-timesheet for this week
+```
 
 Other invocations:
 
@@ -33,80 +99,32 @@ Other invocations:
 | `/fill-timesheet for last week` | Mon–Fri of the previous week |
 | `/fill-timesheet except Friday` | This week, skipping the named day(s) |
 | `/fill-timesheet only Monday, Tuesday` | Only the named day(s) |
-| `/fill-timesheet for March 25, 26, 27` | Specific dates |
 
----
+### MCP setup (one-time)
 
-## One-time setup
-
-Everything below is already configured on this machine — this section is for rebuilding from scratch or on a new machine.
-
-### 1. Prerequisites
-
-- **Python 3.13+**, **Node.js** (for `npx`), **Azure CLI** (`az`)
-- Python deps:
-  ```powershell
-  python -m pip install mcp aiohttp python-dotenv
-  ```
-
-### 2. Toggl API token
-
-Create `.env` next to `server.py`:
-
-```
-TOGGL_API_TOKEN=<your token from Toggl → Profile → API Token>
-```
-
-`server.py` loads this `.env` by absolute path, so it works no matter what directory the MCP host launches it from.
-
-### 3. Connect Outlook to Toggl
-
-In Toggl: **Profile → Calendar integrations → Connect** your Outlook account, and select the calendar(s) to show. The skill reads these synced events; you do **not** need "Auto-track calendar events" turned on.
-
-Verify the connection (optional): the `get_calendar_integrations` tool lists connected providers.
-
-### 4. Azure DevOps auth
-
+**1. Install Python deps:**
 ```powershell
-az login
+pip install mcp aiohttp python-dotenv
 ```
 
-The Azure DevOps MCP authenticates as the signed-in `az` user — no PAT required. Org slug is **`spaceflux`** (project **Spaceflux**, team **Spaceflux Team**).
+**2. Install Node.js** (for `npx`) — [https://nodejs.org](https://nodejs.org)
 
-### 5. MCP servers (`.mcp.json`)
+**3. Toggl MCP server** — `server.py` in this repo wraps the Toggl API.  
+It builds on top of the upstream [`toggl-track-mcp`](https://github.com/vontell/toggl-track-mcp) repo (adds `create_time_entry`, `delete_time_entry`, `get_calendar_events`, and `create_time_entries_bulk`). The upstream repo is not required directly — all tools are re-implemented in `server.py`.
 
-Already created in this folder. It registers two project-scoped servers:
-
-```json
-{
-  "mcpServers": {
-    "toggl": {
-      "command": "C:\\Users\\DanielVichinyan\\AppData\\Local\\Microsoft\\WindowsApps\\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\\python.exe",
-      "args": ["D:\\Professional\\toggl-completion\\server.py"]
-    },
-    "azure-devops": {
-      "command": "cmd",
-      "args": ["/c", "npx", "-y", "@azure-devops/mcp", "spaceflux"]
-    }
-  }
-}
+**4. Azure DevOps MCP** — installed automatically via `npx`:
+```powershell
+npx -y @azure-devops/mcp spaceflux
 ```
 
-Because these are **project-scoped**, Claude Code prompts you to approve them the first time you open this folder. They only load when you run `claude` from here. (Want them everywhere? See "Make it global" below.)
+**5. Auth:**
+- Toggl: `TOGGL_API_TOKEN` in `.env` (same file as the script)
+- ADO: `ADO_PAT` in `.env` (same token)
 
-### 6. The skill
+The `.mcp.json` in this folder registers both servers as project-scoped MCP servers. Claude Code prompts you to approve them the first time.
 
-Lives at `.claude/skills/fill-timesheet/SKILL.md`. Project-scoped, so it's available as `/fill-timesheet` when you run Claude Code from this folder.
-
----
-
-## How it works (the 5 steps the skill runs)
-
-1. **Meetings** — `get_calendar_events(start_date, end_date)` (Toggl MCP) returns the week's Outlook meetings, already converted to your timezone, with ready-to-use ISO start/stop strings. All-day events and `Canceled:` events are dropped.
-2. **Tasks** — `work_list_team_iterations` finds the iteration covering the week; `wit_get_work_items_for_iteration` + `wit_get_work_items_batch_by_ids` fetch its tasks, filtered to **Active tasks assigned to you**. (In iteration Week 2 it prefers tasks not already logged in Week 1.)
-3. **Build** — meetings placed at real times; tasks fill each day to 8h (2–4 entries, 2/3/4h each, one adjusted to make the day total exact).
-4. **Approve** — a per-day table is shown; nothing is written until you approve.
-5. **Publish** — `create_time_entry` writes each entry to the **Kodin Development** project with the correct timezone offset.
+**6. Connect Outlook to Toggl:**  
+Toggl → Profile → Calendar integrations → Connect your Outlook account. The skill reads synced events — "Auto-track calendar events" does **not** need to be on.
 
 ---
 
@@ -114,33 +132,22 @@ Lives at `.claude/skills/fill-timesheet/SKILL.md`. Project-scoped, so it's avail
 
 | Tool | Purpose |
 |---|---|
-| `get_calendar_events` | Read connected-calendar (Outlook) meetings — **replaces browser scraping** |
-| `get_calendar_integrations` | List connected calendars / auto-track status |
+| `get_calendar_events` | Read Outlook meetings from Toggl's calendar integration |
+| `get_calendar_integrations` | List connected calendars |
 | `create_time_entry` | Create a finished entry with explicit start/stop |
-| `delete_time_entry` | Delete an entry by ID (use to undo) |
+| `create_time_entries_bulk` | Create multiple entries in one call (avoids rate limits) |
+| `delete_time_entry` | Delete an entry by ID |
 | `get_time_entries`, `get_time_summary`, `search_time_entries` | Read/report entries |
 | `get_projects`, `get_workspaces`, `get_project_tasks`, `get_all_tasks` | Lookups |
 | `start_timer`, `stop_current_timer`, `get_current_timer` | Live timer control |
 | `create_project_task` | Create a Toggl project task |
 
-`create_time_entry`, `delete_time_entry`, `get_calendar_events`, and `get_calendar_integrations` are additions on top of the upstream [`toggl-track-mcp`](https://github.com/vontell/toggl-track-mcp).
-
 ---
 
 ## Gotchas
 
-- **Duplicates:** re-running for the same week creates duplicate entries (no dedupe). To undo, delete the entries by ID via `delete_time_entry`.
-- **Calendar sync quota:** reading events (`get_calendar_events`) is a read-only DB call and does **not** consume your rate-limited calendar provider-sync quota (the "X/30 requests"). That quota is only for forcing a fresh pull from Outlook, which this setup never does — Toggl syncs on its own schedule.
-- **Timezone:** times follow your Toggl account timezone offset — `+03:00` (EEST, last Sun of Mar → last Sun of Oct) or `+02:00` (EET, otherwise). The calendar tool applies this automatically.
-- **Recent meetings missing:** if a meeting you just created in Outlook isn't showing, Toggl hasn't synced it yet — wait for its periodic sync.
-
----
-
-## Make it global (optional)
-
-To use `/fill-timesheet` from any directory, move the config to your user scope:
-
-- Add the same `mcpServers` block to `~/.claude.json` (user scope), and
-- Copy the skill to `~/.claude/skills/fill-timesheet/SKILL.md`.
-
-Then it works regardless of which folder you launch Claude Code from.
+- **Rate limit:** Toggl free plan allows 30 API requests/hour. The script uses one POST per entry — for a typical week (~15–20 entries) this stays well under the limit.
+- **Duplicates:** re-running for the same week creates duplicate entries (no dedupe). Delete via `delete_time_entry` (MCP) or Toggl UI.
+- **Calendar sync lag:** if a meeting just created in Outlook isn't showing, Toggl hasn't synced it yet — wait a few minutes.
+- **Timezone:** entries use your Toggl account timezone — `+03:00` (EEST, last Sunday of March → last Sunday of October) or `+02:00` (EET, otherwise). The script detects this automatically via the `/me` endpoint.
+- **Windows `az` CLI:** the script uses `shell=True` for subprocess calls so `az.cmd` resolves correctly.
