@@ -1,0 +1,6 @@
+.env
+toggl-track-mcp/
+.claude/
+_rollback.py
+__pycache__/
+*.pyc

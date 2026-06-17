@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "toggl": {
+      "command": "C:\\Users\\DanielVichinyan\\AppData\\Local\\Microsoft\\WindowsApps\\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\\python.exe",
+      "args": ["D:\\Professional\\toggl-completion\\server.py"]
+    },
+    "azure-devops": {
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "@azure-devops/mcp", "spaceflux"]
+    }
+  }
+}
